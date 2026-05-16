@@ -1,0 +1,130 @@
+library(tidyverse)
+library(tigris)
+library(sf)
+library(tidycensus)
+library(mapview)
+options(tigris_use_cache = TRUE)
+#---------------------------------
+# 7.1 Spatial Overlay
+#---------------------------------
+
+# CRS used: NAD83(2011) Kansas Regional Coordinate System
+# Zone 11 (for Kansas City)
+ks_mo_tracts <- map_dfr(c("KS", "MO"), ~{
+  tracts(.x, cb = TRUE, year = 2020)
+}) %>%
+  st_transform(8528)
+kc_metro <- core_based_statistical_areas(cb = TRUE, year = 2020) %>%
+  filter(str_detect(NAME, "Kansas City")) %>%
+  st_transform(8528)
+
+# plot of tracts within the Kansas City area (red) vs outside
+ggplot() +
+  geom_sf(data = ks_mo_tracts, fill = "white", color = "grey") +
+  geom_sf(data = kc_metro, fill = NA, color = "red") +
+  theme_void()
+
+# zoom in
+kc_tracts <- ks_mo_tracts[kc_metro, ]
+ggplot() +
+  geom_sf(data = kc_tracts, fill = "white", color = "lightblue") +
+  geom_sf(data = kc_metro, fill = NA, color = "lightpink2") +
+  theme_void()
+
+kc_tracts_within <- ks_mo_tracts %>%
+  st_filter(kc_metro, .predicate = st_within)
+
+# ^^Equivalent syntax:
+# kc_metro2 <- kc_tracts[kc_metro, op = st_within]
+
+# cuts away anything outside the Kansas City border
+ggplot() +
+  geom_sf(data = kc_tracts_within, fill = "white", color = "lightblue") +
+  geom_sf(data = kc_metro, fill = NA, color = "lightpink2") +
+  theme_void()
+#---------------------------------
+# 7.2 Spatial Joins
+#---------------------------------
+gainesville_patients <- tibble(
+  patient_id = 1:10,
+  longitude = c(-82.308131, -82.311972, -82.361748, -82.374377,
+                -82.38177, -82.259461, -82.367436, -82.404031,
+                -82.43289, -82.461844),
+  latitude = c(29.645933, 29.655195, 29.621759, 29.653576,
+               29.677201, 29.674923, 29.71099, 29.711587,
+               29.648227, 29.624037)
+)
+
+# CRS: NAD83(2011) / Florida North (organizes the points into geometry form)
+gainesville_sf <- gainesville_patients %>%
+  st_as_sf(coords = c("longitude", "latitude"),
+           crs = 4326) %>%
+  st_transform(6440)
+
+# view the points on Viewer tab
+mapview(
+  gainesville_sf,
+  col.regions = "lightgreen",
+  legend = FALSE
+)
+
+alachua_insurance <- get_acs(
+  geography = "tract",
+  variables = "DP03_0096P",
+  state = "FL",
+  county = "Alachua",
+  year = 2019,
+  geometry = TRUE
+) %>%
+  select(GEOID, pct_insured = estimate,
+         pct_insured_moe = moe) %>%
+  st_transform(6440) #aligns the CRS of tracts & patients datasets
+
+mapview(
+  alachua_insurance,
+  zcol = "pct_insured",
+  layer.name = "% with health<br/>insurance" #legend text formatting
+) +
+  mapview(
+    gainesville_sf,
+    col.regions = "red",
+    legend = FALSE
+  )
+
+# Adds GEOID info from ACS census tract & neighborhood demographics
+patients_joined <- st_join(
+  gainesville_sf,
+  alachua_insurance
+)
+
+# CRS: NAD83(2011) / Texas Centric Albers Equal Area
+tx_cbsa <- get_acs(
+  geography = "cbsa",
+  variables = "B01003_001",
+  year = 2019,
+  survey = "acs1",
+  geometry = TRUE
+) %>%
+  filter(str_detect(NAME, "TX")) %>%
+  slice_max(estimate, n = 4) %>%
+  st_transform(6579)
+
+#Census tracts from all of Texas
+pct_hispanic <- get_acs(
+  geography = "tract",
+  variables = "DP05_0071P",
+  state = "TX",
+  year = 2019,
+  geometry = TRUE
+) %>%
+  st_transform(6579)
+
+#separate the 4 tracts that fall within the MSA's of interest using st_join
+hispanic_by_metro <- st_join(
+  pct_hispanic,
+  tx_cbsa,
+  join = st_within,
+  suffix = c("_tracts", "_metro"),
+  left = FALSE
+)
+
